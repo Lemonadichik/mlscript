@@ -1,0 +1,9 @@
+def main() {
+    print("Это функция main. Которую я щас вызову!");
+    str answer = input("Крутой язык?: ");
+    if answer == "Yes" {
+        print("Согласен!");
+        return None;
+    }
+    print("Тупой");
+}
