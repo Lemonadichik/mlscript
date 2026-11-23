@@ -16,7 +16,7 @@ fn main() {
     engine.register("print", &[Type::Str], Type::Null, write);
     engine.register("input", &[Type::Str], Type::Str, value_input);
 
-    let script = match engine.compile(engine.read_code("test").unwrap()) {
+    let mut script = match engine.compile(engine.read_code("test").unwrap()) {
         Ok(s) => s,
         Err(e) => {
             panic!("{e}")
@@ -24,7 +24,8 @@ fn main() {
     };
 
     let mut ctx = &mut MyCtx { num: 0 };
-    match engine.script_call(&script, "main", &[], ctx) {
+    engine.run_script(&mut script, ctx);
+    match engine.script_call(&mut script, "main", &[], ctx) {
         Some(_) => println!("Метод вызван"),
         None => println!("Метод не найден"),
     }

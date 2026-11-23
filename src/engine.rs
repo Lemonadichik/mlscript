@@ -37,21 +37,29 @@ impl<T> Engine<T> {
         }
     }
 
-    pub fn run_script(&self, script: &Script, ctx: &mut T) -> Value {
+    pub fn clear_script(&self, script: &mut Script) {
+        for i in 0..script.global_variables.len() {
+            script.global_variables[i] = Value::Null;
+        }
+    }
+    pub fn run_script(&self, script: &mut Script, ctx: &mut T) -> Value {
         script.main_run(ctx, &self.funcs)
     }
-    pub fn script_call(&self, script: &Script, name: &str, params: &[Value], ctx: &mut T) -> Option<Value> {
+    pub fn script_call(&self, script: &mut Script, name: &str, params: &[Value], ctx: &mut T) -> Option<Value> {
         let f_id = match script.funcs_map.get(name) {
             Some(id) => id,
             None => return None,
         };
 
-        let script = &script.funcs[*f_id];
-        let mut variables: Box<[Value]> = vec![Value::Null; script.total_variables].into_boxed_slice();
+        let mut global_vars = std::mem::take(&mut script.global_variables);
+        let sub_script = &script.funcs[*f_id];
+        let mut variables: Box<[Value]> = vec![Value::Null; sub_script.total_variables].into_boxed_slice();
         for (i, val) in params.iter().enumerate() {
             variables[i] = val.clone();
         }
 
-        Some(script.run::<T>(&mut variables, &script.funcs, ctx, &self.funcs))
+        let result = Some(sub_script.run::<T>(&mut variables, &mut global_vars, &sub_script.funcs, ctx, &self.funcs));
+        script.global_variables = std::mem::take(&mut global_vars);
+        result
     }
 }

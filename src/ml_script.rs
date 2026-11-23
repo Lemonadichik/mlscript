@@ -10,13 +10,19 @@ pub struct Script {
     pub funcs_map: HashMap<String, usize>,
     pub commands: Box<[Command]>,
     pub total_variables: usize,
+    pub global_variables: Box<[Value]>,
 }
 
 impl Script {
-    pub fn main_run<C>(&self, ctx: &mut C, funcs: &[SysFn<C>]) -> Value {
-        self.run(&mut vec![Value::Null; self.total_variables].into_boxed_slice(), &self.funcs, ctx, funcs)
+    pub fn main_run<C>(&mut self, ctx: &mut C, funcs: &[SysFn<C>]) -> Value {
+
+
+        let mut global_vars = std::mem::take(&mut self.global_variables);
+        let result = self.run(&mut vec![Value::Null; self.total_variables].into_boxed_slice(), &mut global_vars, &self.funcs, ctx, funcs);
+        self.global_variables = std::mem::take(&mut global_vars);
+        result
     }
-    pub fn run<C>(&self, variables: &mut Box<[Value]>, funcs: &Box<[Script]>, ctx: &mut C, sys_funcs: &[SysFn<C>]) -> Value {
+    pub fn run<C>(&self, variables: &mut Box<[Value]>, global_vars: &mut Box<[Value]>, funcs: &Box<[Script]>, ctx: &mut C, sys_funcs: &[SysFn<C>]) -> Value {
         let mut i: usize = 0;
 
         while i < self.commands.len() {
@@ -24,10 +30,13 @@ impl Script {
 
             match command {
                 Command::Var(id, expr) => {
-                    variables[*id as usize] = count_expr(expr, variables, funcs, ctx, sys_funcs);
+                    variables[*id as usize] = count_expr(expr, variables, global_vars, funcs, ctx, sys_funcs);
                 },
+                Command::GlobalVar(id, expr) => {
+                    global_vars[*id as usize] = count_expr(expr, variables, global_vars, funcs, ctx, sys_funcs);
+                }
                 Command::If(expr, jumpsize) => {
-                    let v = count_expr(expr, variables, funcs, ctx, sys_funcs);
+                    let v = count_expr(expr, variables, global_vars, funcs, ctx, sys_funcs);
                     let cond = match v {
                         Value::Bool(v) => v,
                         Value::Float(v) => v > 0.0,
@@ -44,7 +53,7 @@ impl Script {
                     // Считаем аргументы, пока скрипт никто не трогал
                     let values: Vec<Value> = args
                         .iter()
-                        .map(|arg| count_expr(arg, variables, funcs, ctx, sys_funcs))
+                        .map(|arg| count_expr(arg, variables, global_vars, funcs, ctx, sys_funcs))
                         .collect();
 
                     // Записываем их в переменные функции и запускаем
@@ -53,18 +62,18 @@ impl Script {
                     for (i, v) in values.into_iter().enumerate() {
                         variables[i] = v;
                     }
-                    script.run(&mut variables, funcs, ctx, sys_funcs);
+                    script.run(&mut variables, global_vars, funcs, ctx, sys_funcs);
                 },
                 Command::SystemCall(f_id, args) => {
                     // Считаем аргументы, пока скрипт никто не трогал
                     let values: Vec<Value> = args
                         .iter()
-                        .map(|arg| count_expr(arg, variables, funcs, ctx, sys_funcs))
+                        .map(|arg| count_expr(arg, variables, global_vars, funcs, ctx, sys_funcs))
                         .collect();
                     sys_funcs[*f_id as usize](ctx, values);
                 },
                 Command::While(expr, jumpsize) => {
-                    let value = count_expr(expr, variables, funcs, ctx, sys_funcs);
+                    let value = count_expr(expr, variables, global_vars, funcs, ctx, sys_funcs);
                     let result = match value {
                         Value::Bool(v) => v,
                         _ => false,
@@ -79,7 +88,7 @@ impl Script {
                     continue;
                 }
                 Command::Return(expr) => {
-                    let v = count_expr(expr, variables, funcs, ctx, sys_funcs);
+                    let v = count_expr(expr, variables, global_vars, funcs, ctx, sys_funcs);
                     return v;
                 }
             }

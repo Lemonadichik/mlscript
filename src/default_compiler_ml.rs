@@ -1,11 +1,14 @@
 use core::fmt;
 use std::{collections::HashMap, fmt::format};
 
-use crate::{code_reader::{parse_function_call, parse_function_define}, default_compiler_ml::CompileError::{FunctionDefineError, TypeMismatch, UnknownCommand, VariableDoesntDefined}, ml_script::Script, ml_structs::{Command::{self, If, JumpUp, Return, SystemCall, While}, Expr, ExprParser, Op, Type, Value, infer_type}};
+use crate::{code_reader::{parse_function_call, parse_function_define}, default_compiler_ml::CompileError::{FunctionDefineError, NotAllowedHere, TypeMismatch, UnknownCommand, VariableDoesntDefined}, ml_script::Script, ml_structs::{Command::{self, If, JumpUp, Return, SystemCall, While}, Expr, ExprParser, Op, Type, Value, infer_type}};
 
 pub fn parse_code(commands_text: Vec<(String, usize)>, parser: &ExprParser, system_calls: &SystemCalls) -> Result<Script, CompileError> {
     let mut compiled_scripts: Vec<Script> = Vec::new();
     let mut funcs: HashMap<String, usize> = HashMap::new();
+
+    let mut global_vars: HashMap<String, usize> = HashMap::new();
+    let mut global_types: Vec<Type> = Vec::new();
 
     let main_script = parse_script(
         commands_text,
@@ -17,6 +20,8 @@ pub fn parse_code(commands_text: Vec<(String, usize)>, parser: &ExprParser, syst
         &mut Vec::new(),
         &mut Vec::new(),
         system_calls,
+        &mut global_vars,
+        &mut global_types,
         &mut compiled_scripts
     );
 
@@ -24,6 +29,7 @@ pub fn parse_code(commands_text: Vec<(String, usize)>, parser: &ExprParser, syst
         Ok(mut ms) => {
             ms.funcs = compiled_scripts.into_boxed_slice();
             ms.funcs_map = funcs;
+            ms.global_variables = vec![Value::Null; global_vars.len()].into_boxed_slice();
             Ok(ms)
         },
         Err(e) => Err(e),
@@ -66,6 +72,8 @@ fn parse_script(
     funcs_args: &mut Vec<Vec<Type>>,
     funcs_types: &mut Vec<Type>,
     system_calls: &SystemCalls,
+    global_vars: &mut HashMap<String, usize>,
+    global_types: &mut Vec<Type>,
     compiled_scripts: &mut Vec<Script>) -> Result<Script, CompileError>
 {
 
@@ -121,32 +129,70 @@ fn parse_script(
                     new_id
                 }
             };
+            types.push(var_type.clone());
 
             let expr_text = eq_splited[1..].join("=");
-            let expr = match parser.parse_tokens_text(expr_text.clone(), &variables, funcs, funcs_args, system_calls) {
+            let expr = match parser.parse_tokens_text(expr_text.clone(), &variables, global_vars, funcs, funcs_args, system_calls) {
                 Ok(expr) => expr,
                 Err(e) => return Err(CompileError::ExpressionParseError(format!("({e}, {line})"), offset_line_num)),
             };
 
-            let got_type = infer_type(&expr, &types, funcs_types, &system_calls.return_types);
+            let got_type = infer_type(&expr, &types, funcs_types, global_types, &system_calls.return_types);
             if got_type != var_type && got_type != Type::Null {
                 return Err(TypeMismatch(format!("{line}, expected {var_type:?} but got {got_type:?}"), offset_line_num));
             }
 
-            types.push(var_type);
             commands.push(Command::Var(var_id as u32, expr));
+
+        }
+
+        // Объявление глобальной переменной global float a = 10.5;
+        else if space_splited[0] == "global" && parser.types_map.contains_key(space_splited[1]) && space_splited.len() >= 3 && eq_splited.len() > 1 {
+
+            if in_func != None {
+                return Err(NotAllowedHere(format!("You cant define global variables in function"), offset_line_num));
+            }
+
+            let var_type = parser.types_map.get(space_splited[1]).unwrap().clone();
+            let var_name = space_splited[2];
+
+            let var_id = match global_vars.get(var_name) {
+                Some(id) => {
+                    return Err(CompileError::VariableAlreadyDefined(line.to_string(), offset_line_num));
+                },
+                None => {
+                    let new_id = global_vars.len();
+                    global_vars.insert(var_name.to_string(), new_id);
+                    new_id
+                }
+            };
+            global_types.push(var_type.clone());
+
+            let expr_text = eq_splited[1..].join("=");
+            let expr = match parser.parse_tokens_text(expr_text.clone(), &variables, global_vars, funcs, funcs_args, system_calls) {
+                Ok(expr) => expr,
+                Err(e) => return Err(CompileError::ExpressionParseError(format!("({e}, {line})"), offset_line_num)),
+            };
+
+            let got_type = infer_type(&expr, &types, funcs_types, global_types, &system_calls.return_types);
+            if got_type != var_type && got_type != Type::Null {
+                return Err(TypeMismatch(format!("{line}, expected {var_type:?} but got {got_type:?}"), offset_line_num));
+            }
+
+            //println!("global var parsed! name = {var_name}, type = {var_type:?}, len = {}", global_types.len());
+            commands.push(Command::GlobalVar(var_id as u32, expr));
 
         }
 
         // return Type;
         else if space_splited.len() >= 2 && space_splited[0] == "return" {
             let expr_text = space_splited[1..].join(" ");
-            let expr = match parser.parse_tokens_text(expr_text.clone(), &variables, funcs, funcs_args, system_calls) {
+            let expr = match parser.parse_tokens_text(expr_text.clone(), &variables, global_vars, funcs, funcs_args, system_calls) {
                 Ok(expr) => expr,
                 Err(e) => return Err(CompileError::ExpressionParseError(format!("({e}, {line})"), offset_line_num)),
             };
 
-            let got_type = infer_type(&expr, &types, funcs_types, &system_calls.return_types);
+            let got_type = infer_type(&expr, &types, global_types, funcs_types, &system_calls.return_types);
             match in_func {
                 Some(ref t) => {
                     if got_type != *t && got_type != Type::Null {
@@ -172,12 +218,12 @@ fn parse_script(
             let mut args: Vec<Expr> = Vec::new();
             
             for (i, arg_text) in func_data.params.iter().enumerate() {
-                let expr = match parser.parse_tokens_text(arg_text.to_string(), &variables, funcs, funcs_args, system_calls) {
+                let expr = match parser.parse_tokens_text(arg_text.to_string(), &variables, global_vars, funcs, funcs_args, system_calls) {
                     Ok(expr) => expr,
                     Err(e) => return Err(CompileError::ExpressionParseError(format!("({e}, {line})"), offset_line_num)),
                 };
                 let need_type = funcs_args[func_id][i].clone();
-                let got_type = infer_type(&expr, &types, funcs_types, &system_calls.return_types);
+                let got_type = infer_type(&expr, &types, global_types, funcs_types, &system_calls.return_types);
 
                 if got_type != need_type && got_type != Type::Null {
                     return Err(TypeMismatch(format!("{line}, expected {need_type:?} but got {got_type:?}"), offset_line_num));
@@ -221,11 +267,11 @@ fn parse_script(
 
             let mut parsed_args: Vec<Expr> = Vec::new();
             for (i, check_arg) in parsed_func.params.iter().enumerate() {
-                let parsed_expr = match parser.parse_tokens_text(check_arg.to_string(), &variables, funcs, funcs_args, system_calls) {
+                let parsed_expr = match parser.parse_tokens_text(check_arg.to_string(), &variables, global_vars, funcs, funcs_args, system_calls) {
                     Ok(e) => e,
                     Err(e) => return Err(CompileError::ExpressionParseError(format!("({e}, {line})"), offset_line_num)),
                 };
-                let got_type = infer_type(&parsed_expr, &types, funcs_types, &system_calls.return_types);
+                let got_type = infer_type(&parsed_expr, &types, global_types, funcs_types, &system_calls.return_types);
                 let need_type = args[i].clone();
                 if got_type != need_type && got_type != Type::Null {
                     return Err(TypeMismatch(format!("{line}, expected {need_type:?} but got {got_type:?}"), offset_line_num));
@@ -241,7 +287,7 @@ fn parse_script(
         // Условия if a == true {..}
         else if space_splited.len() > 1 && space_splited[0] == "if" {
             let expr_text = space_splited[1..].join(" ");
-            let expr = match parser.parse_tokens_text(expr_text, &variables, funcs, funcs_args, system_calls) {
+            let expr = match parser.parse_tokens_text(expr_text, &variables, global_vars, funcs, funcs_args, system_calls) {
                 Ok(expr) => expr,
                 Err(e) => return Err(CompileError::ExpressionParseError(format!("({e}, {line})"), offset_line_num)),
             };
@@ -252,7 +298,7 @@ fn parse_script(
         // Условия if a == true {..}
         else if space_splited.len() > 1 && space_splited[0] == "while" {
             let expr_text = space_splited[1..].join(" ");
-            let expr = match parser.parse_tokens_text(expr_text, &variables, funcs, funcs_args, system_calls) {
+            let expr = match parser.parse_tokens_text(expr_text, &variables, global_vars, funcs, funcs_args, system_calls) {
                 Ok(expr) => expr,
                 Err(e) => return Err(CompileError::ExpressionParseError(format!("({e}, {line})"), offset_line_num)),
             };
@@ -261,6 +307,11 @@ fn parse_script(
         }
 
         else if space_splited.len() >= 1 && space_splited[0] == "def" {
+
+            if in_func != None {
+                return Err(NotAllowedHere(format!("You cant define functions in function"), offset_line_num));
+            }
+
             let func_data = space_splited[1..].join(" ");
             let parsed_func_data = match parse_function_define(&func_data) {
                 Ok(f) => f,
@@ -318,7 +369,7 @@ fn parse_script(
             funcs_args.push(need_args);
 
             let func_commands = commands_text[i+1..=i + jump_size].to_vec();
-            let script = match parse_script(func_commands, parser, Some(return_type), start_args, i, funcs, funcs_args, funcs_types, system_calls, compiled_scripts) {
+            let script = match parse_script(func_commands, parser, Some(return_type), start_args, i, funcs, funcs_args, funcs_types, system_calls, global_vars, global_types, compiled_scripts) {
                 Ok(f) => f,
                 Err(e) => return  Err(e),
             };
@@ -353,26 +404,35 @@ fn parse_script(
             let var_name = space_splited[0].to_string();
 
             let expr_text = eq_splited[1..].join("=");
-            let expr = match parser.parse_tokens_text(expr_text, &variables, funcs, funcs_args, system_calls) {
+            let expr = match parser.parse_tokens_text(expr_text, &variables, global_vars, funcs, funcs_args, system_calls) {
                 Ok(expr) => expr,
                 Err(e) => return Err(CompileError::ExpressionParseError(format!("({e}, {line})"), offset_line_num)),
             };
 
-            let var_id = match variables.get(&var_name) {
-                Some(id) => *id,
+            let (var_id, is_global) = match variables.get(&var_name) {
+                Some(id) => (*id, false),
                 None => {
-                    return Err(VariableDoesntDefined(line.to_string(), offset_line_num));
+                    match global_vars.get(&var_name) {
+                        Some(id) => (*id, true),
+                        None => return Err(VariableDoesntDefined(line.to_string(), offset_line_num)),
+                    }
                 }
             };
 
-            let need_type = types[var_id].clone();
-            let got_type = infer_type(&expr, &types, funcs_types, &system_calls.return_types);
+            let need_type = match is_global {
+                false => types[var_id].clone(),
+                true => global_types[var_id].clone(),
+            };
+            let got_type = infer_type(&expr, &types, global_types, funcs_types, &system_calls.return_types);
 
             if need_type != got_type && got_type != Type::Null {
                 return Err(TypeMismatch(format!("{line}, expected {need_type:?} but got {got_type:?}"), offset_line_num));
             }
 
-            commands.push(Command::Var(var_id as u32, expr));
+            match is_global {
+                false => commands.push(Command::Var(var_id as u32, expr)),
+                true => commands.push(Command::GlobalVar(var_id as u32, expr)),
+            };
         }
         else {
             return Err(UnknownCommand(format!("{line}"), offset_line_num));
@@ -380,10 +440,9 @@ fn parse_script(
 
     }
 
-    println!("len = {}", variables.len());
-
     let script = Script {
         total_variables: variables.len(),
+        global_variables: Vec::new().into_boxed_slice(),
         funcs_map: HashMap::new(),
         funcs: Vec::new().into_boxed_slice(),
         commands: commands.into_boxed_slice(),
@@ -400,6 +459,7 @@ pub enum CompileError {
     VariableDoesntDefined(String, usize),
     TypeMismatch(String, usize),
     FunctionDefineError(String, usize),
+    NotAllowedHere(String, usize),
 }
 impl fmt::Display for CompileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -410,6 +470,7 @@ impl fmt::Display for CompileError {
             Self::VariableDoesntDefined(v, line)  => write!(f, "line {line}: variable '{v}' doesn't defined"),
             Self::TypeMismatch(msg, line)         => write!(f, "line {line}: Type mismatch: {msg}"),
             Self::FunctionDefineError(msg, line)  => write!(f, "line {line}: Function define error: {msg}"),
+            Self::NotAllowedHere(msg, line)  => write!(f, "line {line}: Function define error: {msg}"),
         }
     }
 }
