@@ -1,14 +1,90 @@
-global float a = 100.0;
-global str text = "Hello!";
+@pure
+def add(int i) > int {
+    return i + 1;
+}
 
-def main() {
-    a = 1000.5;
-    print(a as str);
-    print("Это функция main. Которую я щас вызову!");
-    str answer = input("Крутой язык?: ");
-    if answer == "Yes" {
-        print("Согласен!");
+@pure
+def greet() > int {
+    print("Hello!!!");
+    return 0;
+}
+
+# Рекурсия. Посмотрим на какой он упадет
+# Тут много переменных которые не используются на постоянку
+# Провел тесты, падает на 7805
+def without_destroy_test(int result) {
+    if result == 7000 {
         return None;
     }
-    print("Тупой");
+    int a1 = 100;
+    int a2 = 200;
+    str hello = "Hello!";
+    float b1 = 200403.5;
+    float c = 32.2;
+    int dafad = 100;
+    int fsdfsdfsd = 200;
+    str fsdfsd = "Hello!";
+    float ff = 200403.5;
+    float cfffff = 32.2;
+    without_destroy_test(result + 1);
+}
+
+# Второй тест. Здесь мы удаляем ненужные переменные
+# Результат точно такой же
+def destroy_test(int result) {
+    if result == 7000 {
+        return None;
+    }
+    int a1 = 100;
+    destroy a1;
+    int a2 = 200;
+    destroy a2;
+    str hello = "Hello!";
+    destroy hello;
+    float b1 = 200403.5;
+    destroy b1;
+    float c = 32.2;
+    destroy c;
+    int a1 = 100;
+    destroy a1;
+    int a2 = 200;
+    destroy a2;
+    str hello = "Hello!";
+    destroy hello;
+    float b1 = 200403.5;
+    destroy b1;
+    float c = 32.2;
+    destroy c;
+    destroy_test(result + 1);
+}
+
+def main() {
+    int start_time = time();
+
+    int i = 0;
+    while i < 10000000 {
+        i = add(i);
+        add(i); # Эти лишние вызовы не замедлят итоговый замер
+        add(i);
+        add(i);
+        add(i);
+    }
+    destroy i; # Уничтожаем переменную i. Операция выполняется на этапе компиляции. Её id займет следующая новая переменная. Ручная оптимизация размера стека. Команда нужна тем кто гонится за производительностью и хочет выжать максимум из языка. Команда не работает с глобальными переменными так как они объявляются при старте
+
+    #destroy start_time; # Наглядный пример неправильного использование команды
+    print("time = " + (time() - start_time) as str + "ms"); # Компилятор скажет что переменная start_time не найдена потому что была уничтожена выше
+
+    greet(); # не выведет
+    greet(); # не выведет
+    int ffff = greet(); # выведет
+    print(ffff as str);
+
+    start_time = time();
+    destroy_test(0);
+    print("with destroy, time = " + (time() - start_time) as str + "ms"); # Показало 4ms. Этот вариант чуть быстрее, просто из за порядка вызовов ему сложнее. Если поменять местами резултат будет совсем другой
+
+    start_time = time();
+    without_destroy_test(0);
+    print("without destroy, time = " + (time() - start_time) as str + "ms"); # Показало 3ms
+
 }

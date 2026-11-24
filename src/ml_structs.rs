@@ -1,6 +1,6 @@
 use std::{cmp::Reverse, collections::HashMap, fmt::Error, iter::Peekable, ops::Deref, rc::Rc, str, vec::IntoIter};
 
-use crate::{default_compiler_ml::SystemCalls, ml_script::{Script, SysFn}};
+use crate::{default_compiler_ml::SystemCalls, ml_script::{RunTimeCtx, Script, SysFn}};
 
 pub type ParseResult<T> = Result<T, String>;
 
@@ -359,7 +359,7 @@ impl ExprParser {
                 continue;
             }
 
-            if ['+', '-', '/', '*', '!', '%', '='].contains(&char) {
+            if ['+', '-', '/', '*', '!', '%', '=', '<', '>'].contains(&char) {
                 if last_char_is_operator == false {
                     tokens_str.push(local_buffer.iter().collect());
                     local_buffer.clear();
@@ -504,12 +504,12 @@ impl ExprParser {
     }
 }
 
-pub fn count_expr<C>(expr: &Expr, vars: &Box<[Value]>, global_vars: &mut Box<[Value]>, scripts: &Box<[Script]>, ctx: &mut C, sys_func: &[SysFn<C>]) -> Value {
+pub fn count_expr<C>(expr: &Expr, run_time_ctx: &mut RunTimeCtx<C>, base: usize) -> Value {
     match expr {
         Expr::Value(v) => v.clone(),
         Expr::Binary(a, op, b) => {
-            let v1 = count_expr(a, vars, global_vars, scripts, ctx, sys_func);
-            let v2 = count_expr(b, vars, global_vars, scripts, ctx, sys_func);
+            let v1 = count_expr(a, run_time_ctx, base);
+            let v2 = count_expr(b, run_time_ctx, base);
 
             match v1 {
                 Value::Bool(b_val1) => {
@@ -629,7 +629,7 @@ pub fn count_expr<C>(expr: &Expr, vars: &Box<[Value]>, global_vars: &mut Box<[Va
             }
         },
         Expr::Neg(expr) => {
-            let value = count_expr(expr, vars, global_vars, scripts, ctx, sys_func);
+            let value = count_expr(expr, run_time_ctx, base);
             match value {
                 Value::Float(v) => Value::Float(-v),
                 Value::Int(v) => Value::Int(-v),
@@ -637,7 +637,7 @@ pub fn count_expr<C>(expr: &Expr, vars: &Box<[Value]>, global_vars: &mut Box<[Va
             }
         },
         Expr::As(expr, to_type) => {
-            let value = count_expr(expr, vars, global_vars, scripts, ctx, sys_func);
+            let value = count_expr(expr, run_time_ctx, base);
 
             match value {
                 Value::Bool(v) => {
@@ -695,33 +695,37 @@ pub fn count_expr<C>(expr: &Expr, vars: &Box<[Value]>, global_vars: &mut Box<[Va
             }
         },
         Expr::Variable(v_id) => {
-            vars[*v_id].clone()
+            run_time_ctx.stack[*v_id + base].clone()
         },
         Expr::GlobalVariable(v_id) => {
-            global_vars[*v_id].clone()
+            run_time_ctx.global_vars[*v_id].clone()
         },
         Expr::Func(id, args) => {
-            // Считаем аргументы, пока скрипт никто не трогал
-            let values: Vec<Value> = args
-                .iter()
-                .map(|arg| count_expr(arg, vars, global_vars, scripts, ctx, sys_func))
-                .collect();
 
-            // Записываем их в переменные функции и запускаем
-            let script = &scripts[*id];
-            let mut variables = vec![Value::Null; script.total_variables].into_boxed_slice();
-            for (i, v) in values.into_iter().enumerate() {
-                variables[i] = v;
+            let script = &run_time_ctx.funcs[*id];
+            let new_base = run_time_ctx.stack.len();
+            run_time_ctx.stack.resize(new_base + script.total_variables, Value::Null);
+
+            for (i, arg) in args.iter().enumerate() {
+                run_time_ctx.stack[new_base + i] = count_expr(arg, run_time_ctx, base);
             }
-            script.run(&mut variables, global_vars, scripts, ctx, sys_func)
+
+            let result = script.run(run_time_ctx, new_base);
+            run_time_ctx.stack.truncate(new_base);
+            result
+
         },
         Expr::SysFunc(id, args) => {
-            // Считаем аргументы, пока скрипт никто не трогал
-            let values: Vec<Value> = args
-                .iter()
-                .map(|arg| count_expr(arg, vars, global_vars, scripts, ctx, sys_func))
-                .collect();
-            sys_func[*id as usize](ctx, values)
+
+            let new_base = run_time_ctx.stack.len();
+            run_time_ctx.stack.resize(new_base + args.len(), Value::Null);
+
+            for (i, arg) in args.iter().enumerate() {
+                run_time_ctx.stack[new_base + i] = count_expr(arg, run_time_ctx, base)
+            }
+            let result = run_time_ctx.sys_funcs[*id as usize](run_time_ctx.ctx, &run_time_ctx.stack[new_base..]);
+            run_time_ctx.stack.truncate(new_base);
+            result
         }
     }
 }
@@ -931,13 +935,13 @@ mod tests {
         assert!(parse("nope(1)").unwrap_err().contains("неизвестная функция"));
     }
 
-    fn sys_write(ctx: &mut Vec<String>, args: Vec<Value>) -> Value {
+    fn sys_write(ctx: &mut Vec<String>, args: &[Value]) -> Value {
         if let Some(Value::Str(s)) = args.first() {
             ctx.push(s.to_string());
         }
         Value::Null
     }
-    fn sys_sqrt(_: &mut Vec<String>, args: Vec<Value>) -> Value {
+    fn sys_sqrt(_: &mut Vec<String>, args: &[Value]) -> Value {
         match args.first() {
             Some(Value::Float(x)) => Value::Float(x.sqrt()),
             _ => Value::Null,

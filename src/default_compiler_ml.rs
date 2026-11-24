@@ -1,5 +1,5 @@
 use core::fmt;
-use std::{collections::HashMap, fmt::format};
+use std::{collections::{HashMap, HashSet}, fmt::format};
 
 use crate::{code_reader::{parse_function_call, parse_function_define}, default_compiler_ml::CompileError::{FunctionDefineError, NotAllowedHere, TypeMismatch, UnknownCommand, VariableDoesntDefined}, ml_script::Script, ml_structs::{Command::{self, If, JumpUp, Return, SystemCall, While}, Expr, ExprParser, Op, Type, Value, infer_type}};
 
@@ -17,6 +17,7 @@ pub fn parse_code(commands_text: Vec<(String, usize)>, parser: &ExprParser, syst
         Vec::new(),
         0,
         &mut funcs,
+        &mut HashSet::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         system_calls,
@@ -69,6 +70,7 @@ fn parse_script(
     args: Vec<(String, Type)>,
     start_i: usize,
     funcs: &mut HashMap<String, usize>,
+    pure_funcs: &mut HashSet<String>,
     funcs_args: &mut Vec<Vec<Type>>,
     funcs_types: &mut Vec<Type>,
     system_calls: &SystemCalls,
@@ -76,8 +78,11 @@ fn parse_script(
     global_types: &mut Vec<Type>,
     compiled_scripts: &mut Vec<Script>) -> Result<Script, CompileError>
 {
+    let mut compile_flags: Vec<String> = Vec::new();
 
+    let mut max_variables: usize = 0;
     let mut variables: HashMap<String, usize> = HashMap::new();
+    let mut free_ids: HashSet<usize> = HashSet::new();
     let mut types: Vec<Type> = Vec::new();
 
     for (var_name, var_type) in args {
@@ -89,6 +94,7 @@ fn parse_script(
         let id = variables.len();
         variables.insert(var_name.to_string(), id);
         types.push(var_type);
+        max_variables += 1;
     }
 
     let mut commands: Vec<Command> = Vec::new();
@@ -113,23 +119,48 @@ fn parse_script(
             continue;
         }
 
+        // Подсказки компилятору @
+        if line.starts_with("@") {
+            if in_func != None {
+                return Err(NotAllowedHere("You cant use compile flags in functions".to_string(), offset_line_num));
+            }
+
+            if commands_text.len() > i && commands_text[i + 1].0.starts_with("def ") {
+                compile_flags.push(line.to_string());
+            }
+            else {
+                return Err(NotAllowedHere("You can use compile flags only before functions".to_string(), offset_line_num));
+            }
+        }
+
         // Объявление переменной float a = 10.5;
-        if parser.types_map.contains_key(space_splited[0]) && space_splited.len() >= 2 && eq_splited.len() > 1 {
+        else if parser.types_map.contains_key(space_splited[0]) && space_splited.len() >= 2 && eq_splited.len() > 1 {
 
             let var_type = parser.types_map.get(space_splited[0]).unwrap().clone();
-            let var_name = space_splited[1];
+            let var_name = &space_splited[1..].join(" ").split("=").next().unwrap().trim().to_string();
 
             let var_id = match variables.get(var_name) {
-                Some(id) => {
+                Some(_) => {
                     return Err(CompileError::VariableAlreadyDefined(line.to_string(), offset_line_num));
                 },
                 None => {
-                    let new_id = variables.len();
-                    variables.insert(var_name.to_string(), new_id);
-                    new_id
+                    match free_ids.iter().next().cloned() {
+                        Some(new_id) => {
+                            free_ids.remove(&new_id);
+                            variables.insert(var_name.to_string(), new_id);
+                            types[new_id] = var_type.clone();
+                            new_id
+                        },
+                        None => {
+                            let new_id = variables.len();
+                            variables.insert(var_name.to_string(), new_id);
+                            types.push(var_type.clone());
+                            max_variables += 1;
+                            new_id
+                        }
+                    }
                 }
             };
-            types.push(var_type.clone());
 
             let expr_text = eq_splited[1..].join("=");
             let expr = match parser.parse_tokens_text(expr_text.clone(), &variables, global_vars, funcs, funcs_args, system_calls) {
@@ -137,13 +168,25 @@ fn parse_script(
                 Err(e) => return Err(CompileError::ExpressionParseError(format!("({e}, {line})"), offset_line_num)),
             };
 
-            let got_type = infer_type(&expr, &types, funcs_types, global_types, &system_calls.return_types);
+            let got_type = infer_type(&expr, &types, global_types, funcs_types, &system_calls.return_types);
             if got_type != var_type && got_type != Type::Null {
                 return Err(TypeMismatch(format!("{line}, expected {var_type:?} but got {got_type:?}"), offset_line_num));
             }
 
             commands.push(Command::Var(var_id as u32, expr));
 
+        }
+
+        // Уничтожение переменных destroy var_name
+        // Ручаня оптимизация размера стека. Просто подсказка компилятору
+        else if space_splited[0] == "destroy" {
+            let var_name = space_splited[1..].join(" ");
+            let v_id = match variables.get(&var_name) {
+                Some(id) => id,
+                None => return Err(VariableDoesntDefined(var_name, offset_line_num))
+            };
+            free_ids.insert(*v_id);
+            variables.remove(&var_name);
         }
 
         // Объявление глобальной переменной global float a = 10.5;
@@ -154,7 +197,7 @@ fn parse_script(
             }
 
             let var_type = parser.types_map.get(space_splited[1]).unwrap().clone();
-            let var_name = space_splited[2];
+            let var_name = &space_splited[2..].join(" ").split("=").next().unwrap().trim().to_string();
 
             let var_id = match global_vars.get(var_name) {
                 Some(id) => {
@@ -174,7 +217,7 @@ fn parse_script(
                 Err(e) => return Err(CompileError::ExpressionParseError(format!("({e}, {line})"), offset_line_num)),
             };
 
-            let got_type = infer_type(&expr, &types, funcs_types, global_types, &system_calls.return_types);
+            let got_type = infer_type(&expr, &types, global_types, funcs_types, &system_calls.return_types);
             if got_type != var_type && got_type != Type::Null {
                 return Err(TypeMismatch(format!("{line}, expected {var_type:?} but got {got_type:?}"), offset_line_num));
             }
@@ -237,6 +280,9 @@ fn parse_script(
                 return Err(FunctionDefineError(format!("expected {} but got {} arguments", need_args, func_data.params.len()), offset_line_num));
             }
 
+            if pure_funcs.contains(bracket_splited[0]) {
+                continue;
+            }
             commands.push(Command::Call(func_id as u32, args.into_boxed_slice()));
 
         }
@@ -350,6 +396,13 @@ fn parse_script(
                 
             }
 
+            for flag in compile_flags.iter() {
+                if flag == "@pure" {
+                    pure_funcs.insert(parsed_func_data.name.to_string());
+                }
+            }
+            compile_flags.clear();
+
             let mut need_args: Vec<Type> = Vec::new();
             let mut start_args: Vec<(String, Type)> = Vec::new();
 
@@ -369,7 +422,7 @@ fn parse_script(
             funcs_args.push(need_args);
 
             let func_commands = commands_text[i+1..=i + jump_size].to_vec();
-            let script = match parse_script(func_commands, parser, Some(return_type), start_args, i, funcs, funcs_args, funcs_types, system_calls, global_vars, global_types, compiled_scripts) {
+            let script = match parse_script(func_commands, parser, Some(return_type), start_args, i, funcs, pure_funcs, funcs_args, funcs_types, system_calls, global_vars, global_types, compiled_scripts) {
                 Ok(f) => f,
                 Err(e) => return  Err(e),
             };
@@ -441,7 +494,7 @@ fn parse_script(
     }
 
     let script = Script {
-        total_variables: variables.len(),
+        total_variables: types.len(),
         global_variables: Vec::new().into_boxed_slice(),
         funcs_map: HashMap::new(),
         funcs: Vec::new().into_boxed_slice(),
@@ -470,7 +523,7 @@ impl fmt::Display for CompileError {
             Self::VariableDoesntDefined(v, line)  => write!(f, "line {line}: variable '{v}' doesn't defined"),
             Self::TypeMismatch(msg, line)         => write!(f, "line {line}: Type mismatch: {msg}"),
             Self::FunctionDefineError(msg, line)  => write!(f, "line {line}: Function define error: {msg}"),
-            Self::NotAllowedHere(msg, line)  => write!(f, "line {line}: Function define error: {msg}"),
+            Self::NotAllowedHere(msg, line)  => write!(f, "line {line}: Not allowed here: {msg}"),
         }
     }
 }

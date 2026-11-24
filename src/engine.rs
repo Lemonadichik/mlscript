@@ -1,4 +1,4 @@
-use crate::{CompileError, SysFn, SystemCalls, Type, Value, code_reader::{self, LoadError}, default_compiler_ml, ml_script::Script, ml_structs::{ExprParser, Op}};
+use crate::{CompileError, SysFn, SystemCalls, Type, Value, code_reader::{self, LoadError}, default_compiler_ml, ml_script::{RunTimeCtx, Script}, ml_structs::{ExprParser, Op}};
 
 pub struct Engine<T> {
     parser: ExprParser,
@@ -37,12 +37,12 @@ impl<T> Engine<T> {
         }
     }
 
-    pub fn clear_script(&self, script: &mut Script) {
+    pub fn reset_globals(&self, script: &mut Script) {
         for i in 0..script.global_variables.len() {
             script.global_variables[i] = Value::Null;
         }
     }
-    pub fn run_script(&self, script: &mut Script, ctx: &mut T) -> Value {
+    pub fn script_run(&self, script: &mut Script, ctx: &mut T) -> Value {
         script.main_run(ctx, &self.funcs)
     }
     pub fn script_call(&self, script: &mut Script, name: &str, params: &[Value], ctx: &mut T) -> Option<Value> {
@@ -53,12 +53,21 @@ impl<T> Engine<T> {
 
         let mut global_vars = std::mem::take(&mut script.global_variables);
         let sub_script = &script.funcs[*f_id];
-        let mut variables: Box<[Value]> = vec![Value::Null; sub_script.total_variables].into_boxed_slice();
+
+        let mut stack = vec![Value::Null; sub_script.total_variables];
         for (i, val) in params.iter().enumerate() {
-            variables[i] = val.clone();
+            stack[i] = val.clone();
         }
 
-        let result = Some(sub_script.run::<T>(&mut variables, &mut global_vars, &sub_script.funcs, ctx, &self.funcs));
+        let mut ctx = RunTimeCtx {
+            stack: &mut stack,
+            global_vars: &mut global_vars,
+            funcs: &script.funcs,
+            ctx: ctx,
+            sys_funcs: &self.funcs,
+        };
+
+        let result = Some(sub_script.run::<T>(&mut ctx, 0));
         script.global_variables = std::mem::take(&mut global_vars);
         result
     }

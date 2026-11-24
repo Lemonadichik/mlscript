@@ -17,13 +17,14 @@ pub fn load_script(path: &str) -> Result<Vec<(String, usize)>, LoadError> {
     let lines: Vec<&str> = data.lines().collect();
     let mut commands: Vec<(String, usize)> = Vec::new();
     let mut local_buffer: Vec<char> = Vec::new();
+    let mut compile_flag: bool = false;
 
     for (i, line) in lines.iter().enumerate() {
         let chars: Vec<char> = line.chars().collect();
 
-        for char in chars {
+        for (char_i, char) in chars.iter().enumerate() {
 
-            if char == '{' || char == '}' {
+            if *char == '{' || *char == '}' {
                 if !local_buffer.is_empty() {
                     commands.push((local_buffer.iter().collect(), i));
                     local_buffer.clear();
@@ -31,8 +32,22 @@ pub fn load_script(path: &str) -> Result<Vec<(String, usize)>, LoadError> {
                 commands.push((char.to_string(), i));
                 continue;
             }
+            if *char == '@' {
+                compile_flag = true;
+            }
+            if compile_flag {
+                local_buffer.push(*char);
+                if (char_i + 1 == chars.len()) || *char == ' ' {
+                    if !local_buffer.is_empty() {
+                        commands.push((local_buffer.iter().collect(), i));
+                        local_buffer.clear();
+                    }
+                    compile_flag = false;
+                }
+                continue;
+            }
 
-            if char == ';'{
+            if *char == ';'{
                 if !local_buffer.is_empty() {
                     commands.push((local_buffer.iter().collect(), i));
                     local_buffer.clear();
@@ -40,13 +55,13 @@ pub fn load_script(path: &str) -> Result<Vec<(String, usize)>, LoadError> {
                 continue;
             }
 
-            if char == '#' {
+            if *char == '#' {
                 commands.push((local_buffer.iter().collect(), i));
                 local_buffer.clear();
                 break;
             }
 
-            local_buffer.push(char);
+            local_buffer.push(*char);
 
         }
     }

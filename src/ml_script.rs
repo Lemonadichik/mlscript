@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::ml_structs::{Command, Type, Value, count_expr};
 
-pub type SysFn<C> = fn(&mut C, Vec<Value>) -> Value;
+pub type SysFn<C> = fn(&mut C, &[Value]) -> Value;
 
 #[derive(Default)]
 pub struct Script {
@@ -16,13 +16,23 @@ pub struct Script {
 impl Script {
     pub fn main_run<C>(&mut self, ctx: &mut C, funcs: &[SysFn<C>]) -> Value {
 
-
+        let mut stack: Vec<Value> = vec![Value::Null; self.total_variables];
         let mut global_vars = std::mem::take(&mut self.global_variables);
-        let result = self.run(&mut vec![Value::Null; self.total_variables].into_boxed_slice(), &mut global_vars, &self.funcs, ctx, funcs);
+
+        let mut ctx: RunTimeCtx<'_, C> = RunTimeCtx {
+            stack: &mut stack,
+            global_vars: &mut global_vars,
+            funcs: &self.funcs,
+            sys_funcs: funcs,
+            ctx: ctx,
+        };
+
+        let result = self.run(&mut ctx, 0);
         self.global_variables = std::mem::take(&mut global_vars);
         result
     }
-    pub fn run<C>(&self, variables: &mut Box<[Value]>, global_vars: &mut Box<[Value]>, funcs: &Box<[Script]>, ctx: &mut C, sys_funcs: &[SysFn<C>]) -> Value {
+    // pub fn run<C>(&self, stack: &mut Vec<Value>, global_vars: &mut Box<[Value]>, funcs: &Box<[Script]>, ctx: &mut C, sys_funcs: &[SysFn<C>], base: usize) -> Value {
+    pub fn run<C>(&self, runtime_ctx: &mut RunTimeCtx<C>, base: usize) -> Value {
         let mut i: usize = 0;
 
         while i < self.commands.len() {
@@ -30,13 +40,25 @@ impl Script {
 
             match command {
                 Command::Var(id, expr) => {
-                    variables[*id as usize] = count_expr(expr, variables, global_vars, funcs, ctx, sys_funcs);
+                    runtime_ctx.stack[*id as usize + base] = count_expr(
+                        expr,
+                        runtime_ctx,
+                        base,
+                    );
                 },
                 Command::GlobalVar(id, expr) => {
-                    global_vars[*id as usize] = count_expr(expr, variables, global_vars, funcs, ctx, sys_funcs);
+                    runtime_ctx.global_vars[*id as usize] = count_expr(
+                        expr,
+                        runtime_ctx,
+                        base,
+                    );
                 }
                 Command::If(expr, jumpsize) => {
-                    let v = count_expr(expr, variables, global_vars, funcs, ctx, sys_funcs);
+                    let v = count_expr(
+                        expr,
+                        runtime_ctx,
+                        base,
+                    );
                     let cond = match v {
                         Value::Bool(v) => v,
                         Value::Float(v) => v > 0.0,
@@ -50,30 +72,43 @@ impl Script {
                     }
                 },
                 Command::Call(f_id, args) => {
-                    // Считаем аргументы, пока скрипт никто не трогал
-                    let values: Vec<Value> = args
-                        .iter()
-                        .map(|arg| count_expr(arg, variables, global_vars, funcs, ctx, sys_funcs))
-                        .collect();
 
                     // Записываем их в переменные функции и запускаем
-                    let script = &funcs[*f_id as usize];
-                    let mut variables = vec![Value::Null; script.total_variables].into_boxed_slice();
-                    for (i, v) in values.into_iter().enumerate() {
-                        variables[i] = v;
+                    let script = &runtime_ctx.funcs[*f_id as usize];
+                    let new_base = runtime_ctx.stack.len();
+                    runtime_ctx.stack.resize(new_base + script.total_variables, Value::Null);
+
+                    for (i, arg) in args.iter().enumerate() {
+                        let v = count_expr(
+                            arg,
+                            runtime_ctx,
+                            base,
+                        );
+                        runtime_ctx.stack[new_base + i] = v;
                     }
-                    script.run(&mut variables, global_vars, funcs, ctx, sys_funcs);
+
+                    script.run(runtime_ctx, new_base);
+                    runtime_ctx.stack.truncate(new_base);
                 },
                 Command::SystemCall(f_id, args) => {
-                    // Считаем аргументы, пока скрипт никто не трогал
-                    let values: Vec<Value> = args
-                        .iter()
-                        .map(|arg| count_expr(arg, variables, global_vars, funcs, ctx, sys_funcs))
-                        .collect();
-                    sys_funcs[*f_id as usize](ctx, values);
+                    let new_base = runtime_ctx.stack.len();
+                    runtime_ctx.stack.resize(new_base + args.len(), Value::Null);
+                    for (i, arg) in args.iter().enumerate() {
+                        runtime_ctx.stack[new_base + i] = count_expr(
+                            arg,
+                            runtime_ctx,
+                            base,
+                        );
+                    }
+                    runtime_ctx.sys_funcs[*f_id as usize](runtime_ctx.ctx, &runtime_ctx.stack[new_base..]);
+                    runtime_ctx.stack.truncate(new_base);
                 },
                 Command::While(expr, jumpsize) => {
-                    let value = count_expr(expr, variables, global_vars, funcs, ctx, sys_funcs);
+                    let value = count_expr(
+                        expr,
+                        runtime_ctx,
+                        base,
+                    );
                     let result = match value {
                         Value::Bool(v) => v,
                         _ => false,
@@ -88,8 +123,12 @@ impl Script {
                     continue;
                 }
                 Command::Return(expr) => {
-                    let v = count_expr(expr, variables, global_vars, funcs, ctx, sys_funcs);
-                    return v;
+                    let value = count_expr(
+                        expr,
+                        runtime_ctx,
+                        base,
+                    );
+                    return value;
                 }
             }
 
@@ -98,4 +137,12 @@ impl Script {
 
         Value::Null
     }
+}
+
+pub struct RunTimeCtx<'a, T> {
+    pub stack: &'a mut Vec<Value>,
+    pub global_vars: &'a mut Box<[Value]>,
+    pub funcs: &'a Box<[Script]>,
+    pub ctx: &'a mut T,
+    pub sys_funcs: &'a [SysFn<T>],
 }
