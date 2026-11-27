@@ -71,4 +71,31 @@ impl<T> Engine<T> {
         script.global_variables = std::mem::take(&mut global_vars);
         result
     }
+    pub fn script_event(&self, script: &mut Script, name: &str, params: &[Value], ctx: &mut T) {
+        let f_id_vec = match script.events.get(name) {
+            Some(id) => id,
+            None => return,
+        };
+
+        let mut global_vars = std::mem::take(&mut script.global_variables);
+        for f_id in f_id_vec {
+            let sub_script = &script.funcs[*f_id];
+    
+            let mut stack = vec![Value::Null; sub_script.total_variables];
+            for (i, val) in params.iter().enumerate() {
+                stack[i] = val.clone();
+            }
+    
+            let mut ctx = RunTimeCtx {
+                stack: &mut stack,
+                global_vars: &mut global_vars,
+                funcs: &script.funcs,
+                ctx: ctx,
+                sys_funcs: &self.funcs,
+            };
+    
+            let result = Some(sub_script.run::<T>(&mut ctx, 0));
+            script.global_variables = std::mem::take(&mut global_vars);
+        }
+    }
 }

@@ -7,6 +7,7 @@ pub type SysFn<C> = fn(&mut C, &[Value]) -> Value;
 #[derive(Default)]
 pub struct Script {
     pub funcs: Box<[Script]>,
+    pub events: HashMap<String, Vec<usize>>,
     pub funcs_map: HashMap<String, usize>,
     pub commands: Box<[Command]>,
     pub total_variables: usize,

@@ -36,25 +36,15 @@ def destroy_test(int result) {
         return None;
     }
     int a1 = 100;
-    destroy a1;
     int a2 = 200;
-    destroy a2;
     str hello = "Hello!";
-    destroy hello;
     float b1 = 200403.5;
-    destroy b1;
     float c = 32.2;
-    destroy c;
-    int a1 = 100;
-    destroy a1;
-    int a2 = 200;
-    destroy a2;
-    str hello = "Hello!";
-    destroy hello;
-    float b1 = 200403.5;
-    destroy b1;
-    float c = 32.2;
-    destroy c;
+    int a1aa = 100;
+    int a2фff = 200;
+    str hellofff = "Hello!";
+    float b1ss = 200403.5;
+    float ccc = 32.2;
     destroy_test(result + 1);
 }
 

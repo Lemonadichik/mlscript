@@ -28,33 +28,36 @@ pub enum Op {
     And, // and
     Or, // or
     As,
+    Orelse, // orel
 }
 impl Op {
     /// Приоритет бинарного оператора. Чем больше, тем сильнее связывает.
     fn precedence(&self) -> Option<u8> {
         match self {
-            Op::Or => Some(1),
-            Op::And => Some(2),
-            Op::Eq => Some(3),
-            Op::Gr | Op::Lr | Op::Gt | Op::Lt => Some(4),
-            Op::Add | Op::Sub => Some(5),
-            Op::Mul | Op::Div | Op::Mod => Some(6),
-            Op::As => None, // `as` разбирается отдельно, это не бинарный оператор
+            Op::Orelse => Some(1),
+            Op::Or => Some(2),
+            Op::And => Some(3),
+            Op::Eq => Some(4),
+            Op::Gr | Op::Lr | Op::Gt | Op::Lt => Some(5),
+            Op::Add | Op::Sub => Some(6),
+            Op::Mul | Op::Div | Op::Mod => Some(7),
+            Op::As => None,
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    Value(Value),                 // 10, false, "Hello World"
-    Variable(usize),              // a, b, test (индекс переменной)
-    GlobalVariable(usize),
-    Neg(Box<Expr>),               // -a, -(1 + 2)
-    Binary(Box<Expr>, Op, Box<Expr>), // a + b * 2
-    As(Box<Expr>, Type),          // x as int
-    Func(usize, Vec<Expr>),
-    SysFunc(usize, Vec<Expr>),
+    Value(Value),
+    Variable(u32),
+    GlobalVariable(u32),
+    Neg(Box<Expr>),
+    Binary(Box<Expr>, Op, Box<Expr>),
+    As(Box<Expr>, Type),
+    Func(u32, Box<[Expr]>),
+    SysFunc(u32, Box<[Expr]>),
 }
+const _: () = assert!(std::mem::size_of::<Expr>() <= 24);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Type {
@@ -148,8 +151,8 @@ impl<'a> TokenStream<'a> {
                 self.vars
                     .get(&name)
                     .copied()
-                    .map(Expr::Variable)
-                    .or_else(|| self.globals.get(&name).copied().map(Expr::GlobalVariable))
+                    .map(|id| Expr::Variable(id as u32))
+                    .or_else(|| self.globals.get(&name).copied().map(|id| Expr::GlobalVariable(id as u32)))
                     .ok_or_else(|| format!("неизвестная переменная `{name}`"))
             }
 
@@ -227,9 +230,9 @@ impl<'a> TokenStream<'a> {
         }
 
         if is_sys {
-            Ok(Expr::SysFunc(id, args))
+            Ok(Expr::SysFunc(id as u32, args.into_boxed_slice()))
         } else {
-            Ok(Expr::Func(id, args))
+            Ok(Expr::Func(id as u32, args.into_boxed_slice()))
         }
     }
 }
@@ -245,7 +248,7 @@ fn static_type(expr: &Expr, sys: &SystemCalls) -> Option<Type> {
         Expr::Value(Value::Str(_)) => Some(Type::Str),
         Expr::Value(Value::Null) => Some(Type::Null),
         Expr::Value(_) => None,
-        Expr::SysFunc(id, _) => sys.return_types.get(*id).cloned(),
+        Expr::SysFunc(id, _) => sys.return_types.get(*id as usize).cloned(),
         Expr::Variable(_) | Expr::Func(..) | Expr::GlobalVariable(_) => None,
         Expr::As(_, ty) => Some(ty.clone()),
         Expr::Neg(inner) => match static_type(inner, sys)? {
@@ -265,6 +268,7 @@ fn static_type(expr: &Expr, sys: &SystemCalls) -> Option<Type> {
                 (Type::Int, Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod) => Some(Type::Int),
                 (Type::Float, Op::Add | Op::Sub | Op::Mul | Op::Div) => Some(Type::Float),
                 (Type::Str, Op::Add) => Some(Type::Str),
+                (_, Op::Orelse) => Some(ta.clone()),
                 _ => Some(Type::Null),
             }
         }
@@ -297,6 +301,7 @@ impl ExprParser {
             ("and".to_string(), Op::And),
             ("or".to_string(),  Op::Or ),
             ("as".to_string(),  Op::As ),
+            ("orel".to_string(),  Op::Orelse ),
         ]);
         Self { types_map, operator_map }
     }
@@ -507,6 +512,13 @@ impl ExprParser {
 pub fn count_expr<C>(expr: &Expr, run_time_ctx: &mut RunTimeCtx<C>, base: usize) -> Value {
     match expr {
         Expr::Value(v) => v.clone(),
+        Expr::Binary(a, Op::Orelse, b) => {
+            let left = count_expr(a, run_time_ctx, base);
+            match left {
+                Value::Null => count_expr(b, run_time_ctx, base),
+                _ => left,
+            }
+        },
         Expr::Binary(a, op, b) => {
             let v1 = count_expr(a, run_time_ctx, base);
             let v2 = count_expr(b, run_time_ctx, base);
@@ -613,13 +625,14 @@ pub fn count_expr<C>(expr: &Expr, run_time_ctx: &mut RunTimeCtx<C>, base: usize)
 
                 },
                 Value::Null => {
-                    let n_val2 = match v2 {
-                        Value::Null => true,
-                        _ => false,
-                    };
 
                     match op {
-                        Op::Eq => return Value::Bool(n_val2),
+                        Op::Eq => {
+                            Value::Bool(match v2 {
+                                Value::Null => true,
+                                _ => false,
+                            })
+                        },
                         _ => return Value::Null,
                     }
 
@@ -695,14 +708,14 @@ pub fn count_expr<C>(expr: &Expr, run_time_ctx: &mut RunTimeCtx<C>, base: usize)
             }
         },
         Expr::Variable(v_id) => {
-            run_time_ctx.stack[*v_id + base].clone()
+            run_time_ctx.stack[*v_id as usize + base].clone()
         },
         Expr::GlobalVariable(v_id) => {
-            run_time_ctx.global_vars[*v_id].clone()
+            run_time_ctx.global_vars[*v_id as usize].clone()
         },
         Expr::Func(id, args) => {
 
-            let script = &run_time_ctx.funcs[*id];
+            let script = &run_time_ctx.funcs[*id as usize];
             let new_base = run_time_ctx.stack.len();
             run_time_ctx.stack.resize(new_base + script.total_variables, Value::Null);
 
@@ -780,20 +793,74 @@ pub fn infer_type(expr: &Expr, types: &Vec<Type>, global_types: &Vec<Type>, func
             to_type.clone()
         },
         Expr::Variable(v_id) => {
-            types[*v_id].clone()
+            types[*v_id as usize].clone()
         },
         Expr::GlobalVariable(v_id) => {
-            global_types[*v_id].clone()
+            global_types[*v_id as usize].clone()
         }
         Expr::Func(id, args) => {
-            funcs_types[*id].clone()
+            funcs_types[*id as usize].clone()
         }
         Expr::SysFunc(id, args) => {
             sys_types[*id as usize].clone()
         }
     }
 }
-
+pub fn contain_var(expr: &Expr, var_id: usize) -> bool {
+    match expr {
+        Expr::As(expr, _) => contain_var(expr, var_id),
+        Expr::Binary(e1,_, e2) => contain_var(e1, var_id) || contain_var(e2, var_id),
+        Expr::Func(f_id, args) => {
+            let mut result = false;
+            for arg in args.iter() {
+                result = contain_var(arg, var_id);
+                if result {return true;}
+            }
+            false
+        },
+        Expr::SysFunc(f_id, args) => {
+            let mut result = false;
+            for arg in args.iter() {
+                result = contain_var(arg, var_id);
+                if result {return true;}
+            }
+            false
+        },
+        Expr::GlobalVariable(_) => {
+            false
+        },
+        Expr::Neg(expr) => contain_var(expr, var_id),
+        Expr::Value(v) => false,
+        Expr::Variable(id) => *id == var_id as u32,
+    }
+}
+pub fn replace_var(expr: &mut Expr, from: usize, to: usize) {
+    match expr {
+        Expr::As(expr, _) => replace_var(expr, from, to),
+        Expr::Binary(e1,_, e2) =>{
+            replace_var(e1, from, to);
+            replace_var(e2, from, to)
+        },
+        Expr::Func(f_id, args) => {
+            for arg in args.iter_mut() {
+                replace_var(arg, from, to);
+            }
+        },
+        Expr::SysFunc(f_id, args) => {
+            for arg in args.iter_mut() {
+                replace_var(arg, from, to);
+            }
+        },
+        Expr::GlobalVariable(_) => {},
+        Expr::Neg(expr) => replace_var(expr, from, to),
+        Expr::Value(v) => {},
+        Expr::Variable(id) => {
+            if *id == from as u32 {
+                *id = to as u32;
+            }
+        },
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum Command {

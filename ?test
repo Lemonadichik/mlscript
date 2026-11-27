@@ -1,0 +1,25 @@
+
+@on"main"
+@on"reset"
+def main() {
+    int num = input("Enter the int number: ") as int
+    orel input("Soo.. Try again: ") as int
+    orel input("ARE YOU STUPID?? TRY AGAIN: ") as int;
+
+    if num == None {
+        print("FUCK YOU!!!");
+        return None;
+    }
+    print("Ok, good");
+}
+
+@on"place"
+@on"main"
+def place() {
+    print("place1");
+}
+
+@on"place"
+def place2() {
+    print("place2");
+}

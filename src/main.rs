@@ -12,8 +12,8 @@ mod engine;
 
 fn main() {
 
-    let code = load_script("test").unwrap();
-    for line in code {
+    let code = load_script("?test").unwrap();
+    for line in &code {
         println!("{}", line.0);
     }
 
@@ -22,23 +22,27 @@ fn main() {
     engine.register("input", &[Type::Str], Type::Str, value_input);
     engine.register("time", &[], Type::Int, get_time);
 
-    let mut script = match engine.compile(engine.read_code("test").unwrap()) {
+    let mut script = match engine.compile(code) {
         Ok(s) => s,
         Err(e) => {
             panic!("{e}")
         },
     };
 
+    for func in script.funcs.iter().enumerate() {
+        println!("def {}", func.0);
+        for (i, command) in func.1.commands.iter().enumerate() {
+            println!("{i}: {command:?}");
+        }
+    }
+    for (i, command) in script.commands.iter().enumerate() {
+        println!("{i}: {command:?}");
+    }
+
     let mut ctx = &mut MyCtx { num: 0 };
     engine.script_run(&mut script, ctx);
-    match engine.script_call(&mut script, "main", &[], ctx) {
-        Some(_) => println!("Метод вызван"),
-        None => println!("Метод не найден"),
-    }
-    match engine.script_call(&mut script, "recurcy", &[Value::Int(10)], ctx) {
-        Some(_) => println!("Метод вызван"),
-        None => println!("Метод не найден"),
-    }
+    engine.script_event(&mut script, "main", &[], ctx);
+    engine.script_event(&mut script, "place", &[], ctx);
 
 }
 

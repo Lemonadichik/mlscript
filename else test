@@ -1,0 +1,47 @@
+@pure # Функция имеет смысл только когда стоит в expr, значит когда она вызывается в одиночку. Это знак компилятору что можно ничего не делать
+def calculate(str num1, str op, str num2) > float {
+    float v1 = num1 as float;
+    float v2 = num2 as float;
+    if v1 == None or v2 == None {
+        return None;
+    }
+    
+    if op == "+" {
+        return v1 + v2;
+    }
+    if op == "-" {
+        return v1 - v2;
+    }
+    if op == "*" {
+        return v1 * v2;
+    }
+    if op == "/" {
+        if v2 == 0.0 {
+            return None;        
+        }
+        return v1 / v2;
+    }
+    # По умолчанию функция всегда возвращает None, поэтому можно не писать
+}
+
+# Вызваю эту функцию через Rust
+def main() {
+
+    print("Welcome to calculator on mlscript");
+    str name = input("Enter your name: ");
+    print("Hello, " + name); # переменная name должна отдать свой слот другим переменным далее
+    
+    #main loop
+    while True {
+        str num1 = input("Enter the first num: ");
+        str num2 = input("Enter the second num: ");
+        str op = input("Chose operation(+-/*): ");
+        float result = calculate(num1, op, num2);
+        if result == None {
+            print("Incorrect arguments");
+        }
+        else {
+            print("result = " + result as str);
+        }
+    }
+}
